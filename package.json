@@ -1,0 +1,17 @@
+{
+  "type": "module",
+  "scripts": {
+    "build": "./bin/build.sh",
+    "test": "node test/test.mjs",
+	"bench": "node test/bench.mjs"
+  },
+  "devDependencies": {
+    "binaryen": "^129.0.0",
+    "fastestsmallesttextencoderdecoder-encodeinto": "^1.0.22",
+	"isolated-vm": "^6.1.2",
+    "wabt": "^1.0.39"
+  },
+  "dependencies": {
+    
+  }
+}

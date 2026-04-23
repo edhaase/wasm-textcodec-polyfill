@@ -1,0 +1,1 @@
+node --cpu-prof test/test.mjs
