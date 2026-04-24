@@ -5,6 +5,7 @@ set -e
 WAT=src/codec.wat
 WASM=target/codec.wasm
 WASM_AS="./node_modules/.bin/wasm-as"
+WASM_OPT="./node_modules/.bin/wasm-opt"
 
 # Define shared feature flags
 FEATURES="--enable-gc \
@@ -20,6 +21,6 @@ FEATURES="--enable-gc \
 echo "Compiled $WAT to $WASM using wasm-as"
 ls -lh "$WASM"
 
-wasm-opt $FEATURES -O4 -o "$WASM" "$WASM" 
+"$WASM_OPT" $FEATURES -O4 -o "$WASM" "$WASM" 
 echo "Optimized $WASM with wasm-opt -O4"
 ls -lh "$WASM"
