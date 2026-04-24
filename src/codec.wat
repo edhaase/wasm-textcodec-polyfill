@@ -39,7 +39,7 @@
 	
 	;; This is required to have access to linear memory.
 	;; Linear memory is required to transfer Uint8array and Uint16array data.
-	(memory (export "memory") 1)
+	(memory (export "memory") 32)
 
 	;; Mutable, reusuable, global scratch arrays. This reduces our allocation overhead and in theory GC penalties.
 	(global $scratch_i16_array (mut (ref null $array_i16)) (ref.null $array_i16))		
