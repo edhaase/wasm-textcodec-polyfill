@@ -4,12 +4,11 @@
  * TextCodec polyfill for Rust/WASM interop.
  * 
  * Only supports UTF-8 <--> UTF-16 and String.
- * 
- * WASM/JS string interop notes:
+ * This version contains specializations for wasm_bindgen.
  * 
  */
 // import * as wasm from '../test/wasm_module.js';
-import * as wasm from '../test/wasm_module.js';
+import { sharedCodec, privateCodec } from '../test/wasm_module_pair.js';
 
 // Align SCRATCH_BASE to 64 bytes for SIMD
 const SCRATCH_BASE = 0;
@@ -26,40 +25,20 @@ export class TextEncoder {
 	 */
 	encoding;
 
-	#memory;
-
 	constructor() {
 		/**
 		 * @type {string}
 		 */
 		this.encoding = 'utf-8';
-		this.#memory = wasm.memory;
 	}
 
 	/**
-	 * Encodes a given string into a new Uint8Array containing UTF-8 encoded bytes.
-	 * @param {string} input - The string to encode.
-	 * @returns {Uint8Array} The UTF-8 encoded bytes.
-	 */
-	encode(input) {
-		const string = String(input);
-		// Maximum possible size for UTF-8 is 4 bytes per code unit (worst case for non-BMP)
-		const maxBytes = string.length * 4;
-		// Ensure WASM memory is large enough
-		this.#ensureMemory(maxBytes);
-		const buffer = new Uint8Array(this.#memory.buffer, SCRATCH_BASE, maxBytes);
-		// Call WASM string_to_utf8 (returns written count)
-		const written = wasm.exports.string_to_utf8(string, SCRATCH_BASE, maxBytes);
-		// Copy result to a new buffer to avoid exposing WASM memory
-		return new Uint8Array(buffer.buffer, buffer.byteOffset, written).slice();
-	}
-
-	/**
-	 * Ensure WASM memory is large enough for the required number of bytes.
+	 * Ensure WASM memory is large enough for the required number of bytes. This is only needed for the
+	 * private-memory codec.
 	 * @param {number} requiredBytes
 	 */
 	#ensureMemory(requiredBytes) {
-		const memory = this.#memory;
+		const memory = privateCodec.memory;
 		const buffer = memory.buffer;
 		if (buffer.byteLength < requiredBytes) {
 			// Calculate required pages (64 KiB per page)
@@ -70,21 +49,49 @@ export class TextEncoder {
 	}
 
 	/**
+	 * Encodes a given string into a new Uint8Array containing UTF-8 encoded bytes.
+	 * 
+	 * This method *always* uses the private codec.
+	 * 
+	 * @param {string} input - The string to encode.
+	 * @returns {Uint8Array} The UTF-8 encoded bytes.
+	 */
+	encode(input) {
+		const string = String(input);
+		// Maximum possible size for UTF-8 is 4 bytes per code unit (worst case for non-BMP)
+		const maxBytes = string.length * 4;
+		// Ensure WASM memory is large enough
+		this.#ensureMemory(maxBytes);
+		const buffer = new Uint8Array(privateCodec.memory.buffer, SCRATCH_BASE, maxBytes);
+		// Call WASM string_to_utf8 (returns written count)
+		const written = privateCodec.exports.string_to_utf8(string, SCRATCH_BASE, maxBytes);
+		// wasm_bindgen is unlikely to call encode(), but if it does, it
+		// will make it's own copy of the buffer, so we remove the .slice() step as it's redundant.
+		return new Uint8Array(buffer.buffer, buffer.byteOffset, written);
+	}
+
+	/**
 	 * Encodes a string into a destination Uint8Array buffer.
 	 * @param {string} source - The string to encode.
 	 * @param {Uint8Array} destination - The buffer to write the UTF-8 bytes into.
 	 * @returns {{read: number, written: number}} Object with the number of code units read and bytes written.
 	 */
 	encodeInto(source, destination) {
-		const srcLen = source.length;
+		const string = String(source);
+		const srcLen = string.length;
 		// Write into WASM memory at SCRATCH_BASE
 		const maxBytes = destination.length;
-        this.#ensureMemory(maxBytes);
-		const written = wasm.exports.string_to_utf8(source, SCRATCH_BASE, maxBytes);
-		// Copy from WASM memory to destination
-		const bufferOut = new Uint8Array(this.#memory.memory.buffer, SCRATCH_BASE, written);
-		destination.set(bufferOut.subarray(0, written));
-		return { read: srcLen, written };
+		if (destination.buffer === sharedCodec.memory.buffer) {
+			// We've received a shared memory object and can avoid a copy.
+			const written = sharedCodec.exports.string_to_utf8(string, destination.byteOffset, destination.length);
+			return { read: srcLen, written };
+		} else {
+			this.#ensureMemory(maxBytes);
+			const written = privateCodec.exports.string_to_utf8(string, SCRATCH_BASE, maxBytes);
+			const bufferOut = new Uint8Array(privateCodec.memory.buffer, SCRATCH_BASE, written);
+			destination.set(bufferOut.subarray(0, written));
+			return { read: srcLen, written };
+		}
 	}
 
 }
@@ -110,8 +117,6 @@ export class TextDecoder {
 	 */
 	ignoreBOM;
 
-	#memory;
-
 	/**
 	 * @param {string} [label='utf-8'] - The label of the encoding.
 	 * @param {{fatal?: boolean, ignoreBOM?: boolean}} [options={}] - Decoder options.
@@ -123,8 +128,22 @@ export class TextDecoder {
 		this.fatal = options.fatal || false;
 		/** @type {boolean} */
 		this.ignoreBOM = options.ignoreBOM || false;
+	}
 
-		this.#memory = wasm.memory;
+	/**
+	 * Ensure WASM memory is large enough for the required number of bytes.
+	 * This is only needed for the private-memory codec.
+	 * @param {number} requiredBytes
+	 */
+	#ensureMemory(requiredBytes) {
+		const memory = privateCodec.memory;
+		const buffer = memory.buffer;
+		if (buffer.byteLength < requiredBytes) {
+			// Calculate required pages (64 KiB per page)
+			const needed = requiredBytes - buffer.byteLength;
+			const pages = Math.ceil(needed / PAGE_SIZE);
+			memory.grow(pages);
+		}
 	}
 
 	/**
@@ -142,28 +161,17 @@ export class TextDecoder {
 		}
 		const bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : input;
 		const bytesLength = bytes.length;
-		// Copy input to WASM memory at SCRATCH_BASE
-		this.#ensureMemory(bytesLength);
-		const bufferIn = new Uint8Array(this.#memory.buffer, SCRATCH_BASE, bytesLength);
-		bufferIn.set(bytes);
-		// Call WASM utf8_to_string (returns externref string)
-		const result = wasm.exports.utf8_to_string(SCRATCH_BASE, bytesLength);
-		// The returned value is a JS string (via string builtins)
-		return result;
-	}
-
-	/**
-	 * Ensure WASM memory is large enough for the required number of bytes.
-	 * @param {number} requiredBytes
-	 */
-	#ensureMemory(requiredBytes) {
-		const memory = this.#memory;
-		const buffer = memory.buffer;
-		if (buffer.byteLength < requiredBytes) {
-			// Calculate required pages (64 KiB per page)
-			const needed = requiredBytes - buffer.byteLength;
-			const pages = Math.ceil(needed / PAGE_SIZE);
-			memory.grow(pages);
+		if (input.buffer === sharedCodec.memory.buffer) {
+			return sharedCodec.exports.utf8_to_string(bytes.byteOffset, bytesLength);
+		} else {
+			// Copy input to WASM memory at SCRATCH_BASE
+			this.#ensureMemory(bytesLength);
+			const bufferIn = new Uint8Array(privateCodec.memory.buffer, SCRATCH_BASE, bytesLength);
+			bufferIn.set(bytes);
+			// Call WASM utf8_to_string (returns externref string)
+			return privateCodec.exports.utf8_to_string(SCRATCH_BASE, bytesLength);
 		}
 	}
+
+
 }

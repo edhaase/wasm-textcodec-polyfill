@@ -26,10 +26,10 @@ import { fileURLToPath } from 'url';
 const resolvedPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), DEFAULT_PATH);
 const wasmBuffer = fs.readFileSync(resolvedPath);
 const importObject = {};
-const sharedMemory = false;
-if (sharedMemory) {
+export const memory = new WebAssembly.Memory({ initial: 32, maximum: 256 });
+if (memory) {
 	importObject.env = importObject.env || {};
-	importObject.env.memory = sharedMemory;
+	importObject.env.memory = memory;
 }
 export const module = new WebAssembly.Module(wasmBuffer, {
 	builtins: ["js-string"]
